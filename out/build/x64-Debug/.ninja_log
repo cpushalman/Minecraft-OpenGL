@@ -1,0 +1,6 @@
+# ninja log v6
+5	455	7753264020859709	CMakeFiles/OpenGLProject.dir/src/glad.c.obj	58618f70c075bf40
+12	660	7753264020919654	CMakeFiles/OpenGLProject.dir/src/main.cpp.obj	605d26b0ca5cc4a9
+661	1296	7753264027414416	OpenGLProject.exe	96812df810ff5132
+8	601	7753267360866465	CMakeFiles/OpenGLProject.dir/src/main.cpp.obj	605d26b0ca5cc4a9
+602	824	7753267366820129	OpenGLProject.exe	96812df810ff5132
