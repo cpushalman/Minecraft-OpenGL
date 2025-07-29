@@ -19,6 +19,3 @@ CMakeSettings.json
 *.cmake
 *.bin
 
-# Ignore GLM and stb if you want to keep them external
-include/glm/
-include/stb_image/

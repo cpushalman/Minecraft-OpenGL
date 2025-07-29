@@ -11,6 +11,42 @@
 #define TILE_SIZE (1.0f / 6.0f)
 #define TILE_U(col) ((col) * TILE_SIZE)
 #define TILE_V(row) ((row) * TILE_SIZE)
+// === Global Camera Variables ===
+float playerYVelocity = 0.0f;
+const float gravity = -9.8f;
+const float jumpStrength = 5.0f;
+bool isGrounded = false;
+
+const int CHUNK_SIZE = 16;
+
+struct Chunk {
+    int blocks[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
+
+    Chunk() {
+        for (int x = 0; x < CHUNK_SIZE; ++x)
+            for (int y = 0; y < CHUNK_SIZE; ++y)
+                for (int z = 0; z < CHUNK_SIZE; ++z)
+                    blocks[x][y][z] = (y < CHUNK_SIZE / 2) ? 1 : 0;  // simple terrain
+    }
+};
+
+glm::vec3 cameraPos = glm::vec3(0.0f, 8.0f, 3.0f); // 1 block above terrain
+
+glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
+glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
+glm::ivec3 blockPos = glm::floor(cameraPos);
+std::vector<glm::vec3> chunkPositions;
+
+
+float yaw = -90.0f;  // Start facing negative Z
+float pitch = 0.0f;
+float lastX = 800.0f / 2.0;  // Assuming 800x600 window
+float lastY = 600.0f / 2.0;
+bool firstMouse = true;
+int getHeight(int x, int z) {
+    return (int)(5.0f * sin(0.1f * x) * cos(0.1f * z)) + 8;  // wavy hills
+}
+
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
@@ -21,10 +57,145 @@ void getTileUV(int col, int row, float& uMin, float& vMin, float& uMax, float& v
     uMax = uMin + TILE_SIZE;
     vMax = vMin + TILE_SIZE;
 }
+void processInput(GLFWwindow* window, glm::vec3& cameraPos, glm::vec3& cameraFront, glm::vec3& cameraUp, float deltaTime) {
+    float cameraSpeed = 2.5f * deltaTime;
+    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS && isGrounded) {
+        playerYVelocity = jumpStrength;
+        isGrounded = false;
+    }
+
+
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        glfwSetWindowShouldClose(window, true);
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+        cameraPos += cameraSpeed * cameraFront;
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+        cameraPos -= cameraSpeed * cameraFront;
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+        cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+        cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
+}
+void generateChunk(Chunk& chunk, int chunkX, int chunkY, int chunkZ) {
+    for (int x = 0; x < CHUNK_SIZE; ++x) {
+        for (int z = 0; z < CHUNK_SIZE; ++z) {
+            int worldX = chunkX * CHUNK_SIZE + x;
+            int worldZ = chunkZ * CHUNK_SIZE + z;
+            int height = getHeight(worldX, worldZ);  // world height at (x,z)
+
+            for (int y = 0; y < CHUNK_SIZE; ++y) {
+                int worldY = chunkY * CHUNK_SIZE + y;
+
+                if (worldY <= height) {
+                    chunk.blocks[x][y][z] = 1; // Block is filled
+                }
+                else {
+                    chunk.blocks[x][y][z] = 0; // Air
+                }
+            }
+        }
+    }
+}
+void renderChunk(const Chunk& chunk, const glm::vec3& chunkPos, unsigned int shaderProgram, unsigned int mvpLoc, const glm::mat4& view, const glm::mat4& projection) {
+    for (int x = 0; x < CHUNK_SIZE; ++x) {
+        for (int y = 0; y < CHUNK_SIZE; ++y) {
+            for (int z = 0; z < CHUNK_SIZE; ++z) {
+                if (chunk.blocks[x][y][z] == 1) {
+                    glm::vec3 blockWorldPos = chunkPos + glm::vec3(x, y, z);
+                    glm::mat4 model = glm::translate(glm::mat4(1.0f), blockWorldPos);
+                    glm::mat4 mvp = projection * view * model;
+                    glUniformMatrix4fv(mvpLoc, 1, GL_FALSE, glm::value_ptr(mvp));
+                    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+                }
+            }
+        }
+    }
+}
+
+bool isBlockSolid(const std::vector<Chunk>& chunks, const std::vector<glm::vec3>& chunkPositions, const glm::vec3& worldPos)
+{
+    int x = (int)floor(worldPos.x);
+    int y = (int)floor(worldPos.y);
+    int z = (int)floor(worldPos.z);
+
+    int chunkX = floor(x / CHUNK_SIZE);
+    int chunkY = floor(y / CHUNK_SIZE);
+    int chunkZ = floor(z / CHUNK_SIZE);
+
+    int localX = x % CHUNK_SIZE;
+    int localY = y % CHUNK_SIZE;
+    int localZ = z % CHUNK_SIZE;
+
+    // Adjust negative mods
+    if (localX < 0) localX += CHUNK_SIZE;
+    if (localY < 0) localY += CHUNK_SIZE;
+    if (localZ < 0) localZ += CHUNK_SIZE;
+
+    for (size_t i = 0; i < chunks.size(); ++i) {
+        glm::vec3 pos = chunkPositions[i];
+        if ((int)(pos.x / CHUNK_SIZE) == chunkX &&
+            (int)(pos.y / CHUNK_SIZE) == chunkY &&
+            (int)(pos.z / CHUNK_SIZE) == chunkZ) {
+
+            return chunks[i].blocks[localX][localY][localZ] == 1;
+        }
+    }
+    return false;
+}
+
+void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
+    static float sensitivity = 0.1f;
+
+    if (firstMouse) {
+        lastX = xpos;
+        lastY = ypos;
+        firstMouse = false;
+    }
+
+    float xoffset = xpos - lastX;
+    float yoffset = lastY - ypos; // reversed: y ranges bottom to top
+    lastX = xpos;
+    lastY = ypos;
+
+    xoffset *= sensitivity;
+    yoffset *= sensitivity;
+
+    yaw += xoffset;
+    pitch += yoffset;
+
+    // Clamp pitch
+    if (pitch > 89.0f)
+        pitch = 89.0f;
+    if (pitch < -89.0f)
+        pitch = -89.0f;
+
+    // Update camera front vector
+    glm::vec3 direction;
+    direction.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
+    direction.y = sin(glm::radians(pitch));
+    direction.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
+    cameraFront = glm::normalize(direction);
+}
+
 
 int main() {
+    std::vector<Chunk> chunks;
+    std::vector<glm::vec3> chunkPositions;
+
+    for (int x = -1; x <= 1; ++x) {
+        for (int z = -1; z <= 1; ++z) {
+            Chunk chunk;
+            generateChunk(chunk, x, 0, z); // Use your perlin-based terrain
+            chunks.push_back(chunk);
+            chunkPositions.emplace_back(x * CHUNK_SIZE, 0, z * CHUNK_SIZE);
+
+        }
+    }
 
 
+
+    float deltaTime = 0.0f;
+    float lastFrame = 0.0f;
 
     std::cout << "Current working directory: " << std::filesystem::current_path() << std::endl;
     const char* texturePath = "textures/atlas.png";
@@ -141,6 +312,9 @@ int main() {
     }
 
     glfwMakeContextCurrent(window);
+   
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    glfwSetCursorPosCallback(window, mouse_callback);
 
     // Load OpenGL functions using GLAD
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
@@ -236,13 +410,42 @@ int main() {
 
     // Render loop
     while (!glfwWindowShouldClose(window)) {
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+        glClearColor(0.52f, 0.80f, 0.92f, 1.0f);  // nice daytime blue
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         float time = glfwGetTime(); // ✅ Define time first
+        float currentFrame = glfwGetTime();
+
 
         // Setup common view and projection matrices
-        glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -3.0f));
+        glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
+        deltaTime = currentFrame - lastFrame;
+        lastFrame = currentFrame;
+
+        processInput(window, cameraPos, cameraFront, cameraUp, deltaTime);
+        // Apply gravity
+       playerYVelocity += gravity * deltaTime;
+cameraPos.y += playerYVelocity * deltaTime;
+
+// Correct feet offset
+glm::vec3 feet = cameraPos + glm::vec3(0.0f, -1.8f, 0.0f);  // exact foot point
+
+if (isBlockSolid(chunks, chunkPositions, feet) && playerYVelocity < 0.0f) {
+    // Land on block: snap exactly to top of block
+    cameraPos.y = floor(cameraPos.y - 1.8f) + 2.8f;  // 1.8 offset + block height (1)
+    playerYVelocity = 0.0f;
+    isGrounded = true;
+} else {
+    isGrounded = false;
+}
+
+
+
+     
+
+      
+
         glm::mat4 projection = glm::perspective(glm::radians(45.0f),
             800.0f / 600.0f, 0.1f, 100.0f);
 
@@ -252,17 +455,10 @@ int main() {
         glBindTexture(GL_TEXTURE_2D, texture);
         glBindVertexArray(VAO);
 
-        for (unsigned int i = 0; i < cubePositions.size(); i++) {
-            glm::mat4 model = glm::mat4(1.0f);
-            model = glm::translate(model, cubePositions[i]);
-            float angle = 20.0f * i + time * 25.0f;
-            model = glm::rotate(model, glm::radians(angle), glm::vec3(1.0f, 0.3f, 0.5f));
-
-            glm::mat4 mvp = projection * view * model;
-            glUniformMatrix4fv(mvpLoc, 1, GL_FALSE, glm::value_ptr(mvp));
-
-            glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+        for (size_t i = 0; i < chunks.size(); ++i) {
+            renderChunk(chunks[i], chunkPositions[i], shaderProgram, mvpLoc, view, projection);
         }
+
 
         glfwSwapBuffers(window);
         glfwPollEvents();
